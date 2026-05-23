@@ -1,0 +1,11 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mini_net"
+version = "0.0.1"
+description = "Learning the Internet"
+requires-python = ">=3.9"
+dependencies = [
+]

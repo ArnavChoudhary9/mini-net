@@ -1,0 +1,18 @@
+[book]
+title = "mini-net"
+description = "A tiny, hackable, tick-based network simulator for learning."
+authors = ["mini-net contributors"]
+language = "en"
+multilingual = false
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = ""
+edit-url-template = ""
+no-section-label = false
+
+[output.html.fold]
+enable = true
+level = 1
