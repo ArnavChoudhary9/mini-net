@@ -41,12 +41,12 @@ class Internet:
         return N
 
     def AddWire(self, Name: str, Capacity: int = 64,
-                DropRate: float = 0.0) -> Wire:
+                DropRate: float = 0.0, Mtu: int = 0) -> Wire:
         """Create a wire, register it, and return it."""
-        W = Wire(Name=Name, Capacity=Capacity, DropRate=DropRate)
+        W = Wire(Name=Name, Capacity=Capacity, DropRate=DropRate, Mtu=Mtu)
         self._Wires.append(W)
-        logger.info("[%s] registered wire '%s' (drop_rate=%.2f)",
-                    self.Name, Name, DropRate)
+        logger.info("[%s] registered wire '%s' (drop_rate=%.2f, mtu=%d)",
+                    self.Name, Name, DropRate, Mtu)
         return W
 
     def FindNode(self, Name: str) -> Node:

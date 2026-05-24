@@ -48,6 +48,18 @@ class Interface:
         logger.debug("[%s] application read: %s", self.Name, Packet_)
         return Packet_
 
+    def SendIpPacket(self, Packet_: Packet, NextHop: Optional[str] = None) -> bool:
+        """
+        Forward an IP packet through this interface.
+
+        Base implementation just calls Send() — the NextHop hint is
+        ignored. Subclasses with L3 awareness (IPInterface,
+        EthernetIPInterface) override this to do route-aware sending
+        and ARP resolution.
+        """
+        _ = NextHop  # not used at this layer
+        return self.Send(Packet_)
+
     def FlushTx(self):
         """
         Phase 1 of a tick: move every pending TX packet onto the wire,
@@ -68,7 +80,8 @@ class Interface:
         if self._Wire is None:
             return
         for Frame_ in self._Wire.Frames():
-            Packet_, Sender = Frame_
+            Packet_ = Frame_[0]
+            Sender = Frame_[1]
             if Sender == self.Name:
                 continue
             logger.info("[%s] RX <- [%s]: %s", self.Name, self._Wire.Name, Packet_)

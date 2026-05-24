@@ -22,7 +22,15 @@ def EnableLogging(Level: int = logging.DEBUG):
     Log = logging.getLogger(_ROOT)
     Log.setLevel(Level)
 
-    if not Log.handlers:
+    # The package __init__ installs a NullHandler so the library is silent
+    # by default — that handler shows up in Log.handlers. We need to add a
+    # real StreamHandler if there isn't one already, regardless of any
+    # NullHandlers that might exist.
+    HasStream = any(
+        isinstance(H, logging.StreamHandler) and not isinstance(H, logging.NullHandler)
+        for H in Log.handlers
+    )
+    if not HasStream:
         Handler = logging.StreamHandler()
         Handler.setFormatter(
             logging.Formatter("%(levelname)-8s %(name)s: %(message)s")

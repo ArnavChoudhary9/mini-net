@@ -4,6 +4,10 @@ import shlex
 from .packet import Packet
 from .internet import Internet
 from .ethernet import EthernetInterface, Switch, MAC
+from .ip import IPInterface, Router, IP
+from .arp import EthernetIPInterface
+from .icmp import EchoRequest
+from .nat import NatRouter
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +67,12 @@ class Controller:
     # ── inspection ───────────────────────────────────────────────────────────
 
     def Inspect(self):
-        """Print a complete snapshot of the world."""
+        """Print a complete snapshot of the world (nodes, interfaces,
+        MAC/routing/NAT tables). Wires are skipped — with two-phase
+        ticking they're always drained by the end of a tick, so they
+        only ever show as empty. Use `peek <wire>` to inspect a wire
+        mid-tick (e.g. from logs)."""
         print(f"[{self.Name}] ----- state @ tick {self._Internet.TickCount} -----")
-        self._PrintWires()
         self._PrintNodes()
         print(f"[{self.Name}] ---------------------------")
 
@@ -83,30 +90,39 @@ class Controller:
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
-    def _PrintWires(self):
-        for W in self._Internet.Wires:
-            Buf = W.Peek()
-            Tag = f"{W.Size} in flight" if Buf else "empty"
-            Drop = f" dropped={W.Dropped}" if W.Dropped else ""
-            print(f"      wire  {W.Name:<20} [{Tag}]{Drop}")
-            for P in Buf:
-                print(f"            - {P}")
-
     def _PrintNodes(self):
         for N in self._Internet.Nodes:
             Tag = f" ({type(N).__name__})" if type(N).__name__ != "Node" else ""
             print(f"      node  {N.Name}{Tag}")
             for Iface in N.Interfaces:
-                MacStr = f" MAC={Iface.Mac}" if isinstance(Iface, EthernetInterface) else ""
+                Extras = ""
+                if isinstance(Iface, EthernetInterface):
+                    Extras = f" MAC={Iface.Mac}"
+                if isinstance(Iface, IPInterface):
+                    Extras = f" IP={Iface.Ip}/{Iface.PrefixLen}"
+                if isinstance(Iface, EthernetIPInterface) and Iface.UdpPorts:
+                    Extras += f" UDP={Iface.UdpPorts}"
                 print(f"            iface {Iface.Name:<20} "
                       f"TX={Iface.TxSize} RX={Iface.RxSize} "
-                      f"wire={Iface.WireName!r}{MacStr}")
+                      f"wire={Iface.WireName!r}{Extras}")
             if isinstance(N, Switch):
                 if N.MacTable:
                     Entries = ", ".join(f"{M}->port{P}" for M, P in N.MacTable.items())
                     print(f"            MAC table: {Entries}")
                 else:
                     print(f"            MAC table: (empty)")
+            if isinstance(N, Router):
+                if N.Routes:
+                    print(f"            routes:")
+                    for R in N.Routes:
+                        print(f"              {R}")
+                else:
+                    print(f"            routes: (empty)")
+            if isinstance(N, NatRouter) and N.NatTable:
+                print(f"            NAT mappings:")
+                for E in N.NatTable:
+                    print(f"              {E.PrivateIp} <-> {E.PublicIp} "
+                          f"peer={E.DstIp} id={E.Identifier}")
 
     @property
     def Internet(self) -> Internet:
@@ -136,6 +152,10 @@ class Controller:
             "s":        self._CmdSend,
             "frame":    self._CmdFrame,
             "f":        self._CmdFrame,
+            "ip":       self._CmdIp,
+            "ping":     self._CmdPing,
+            "udp":      self._CmdUdp,
+            "u":        self._CmdUdp,
             "drain":    self._CmdDrain,
             "d":        self._CmdDrain,
             "peek":     self._CmdPeek,
@@ -146,6 +166,10 @@ class Controller:
             "wires":    self._CmdWires,
             "mactable": self._CmdMacTable,
             "m":        self._CmdMacTable,
+            "routes":   self._CmdRoutes,
+            "r":        self._CmdRoutes,
+            "arp":      self._CmdArp,
+            "nat":      self._CmdNat,
             "log":      self._CmdLog,
         }
 
@@ -191,11 +215,18 @@ class Controller:
   commands:
     send <node> <data> [dst] [seq]         queue a raw packet on a node    (alias: s)
     frame <node> <dst_mac> <data> [seq]    queue an Ethernet frame         (alias: f)
+    ip <node> <dst_ip> <data> [seq] [ttl]  queue an IP packet
+    ping <node> <dst_ip> [seq] [ttl]       send an ICMP echo request
+    udp <node> <dst_ip> <dst_port> <data> [src_port]
+                                           send a stateless UDP datagram   (alias: u)
     tick [n]                               advance the world by n ticks    (alias: t)
     drain <node> [iface]                   read & print everything in RX   (alias: d)
     peek <wire>                            show packets in flight on wire  (alias: p)
     inspect                                full snapshot of the world      (alias: i)
     mactable <switch>                      show a switch's learned table   (alias: m)
+    routes <router>                        show a router's routing table   (alias: r)
+    arp <node>                             show a host's ARP cache
+    nat <router>                           show a NAT router's table
     nodes                                  list all nodes & interfaces
     wires                                  list all wires
     log <level>                            set log level: debug/info/warning/off
@@ -254,6 +285,127 @@ class Controller:
         print(f"  {N.Name} MAC table:")
         for M, P in N.MacTable.items():
             print(f"    {M} -> port{P}")
+
+    def _CmdIp(self, Args):
+        if len(Args) < 3:
+            print("  usage: ip <node> <dst_ip> <data> [seq] [ttl]")
+            return
+        NodeName, DstIp, Data = Args[0], Args[1], Args[2].encode()
+        Seq = int(Args[3]) if len(Args) > 3 else 0
+        TTL = int(Args[4]) if len(Args) > 4 else 64
+        N = self._Internet.FindNode(NodeName)
+        if not N.Interfaces:
+            print(f"  {NodeName} has no interfaces")
+            return
+        Iface = N.Interfaces[0]
+        if not isinstance(Iface, IPInterface):
+            print(f"  {Iface.Name} is not an IPInterface")
+            return
+        if not IP.IsValid(DstIp):
+            print(f"  invalid IP: {DstIp!r}")
+            return
+        Iface.SendIp(DstIp=DstIp, Data=Data, TTL=TTL, Seq=Seq)
+        print(f"[{self.Name}] -> {NodeName}.SendIp  "
+              f"Src={Iface.Ip} Dst={DstIp} TTL={TTL} Data={Data!r}")
+
+    def _CmdRoutes(self, Args):
+        if not Args:
+            print("  usage: routes <router>")
+            return
+        N = self._Internet.FindNode(Args[0])
+        if not isinstance(N, Router):
+            print(f"  {Args[0]} is not a Router")
+            return
+        if not N.Routes:
+            print(f"  {N.Name} has no routes")
+            return
+        print(f"  {N.Name} routing table:")
+        for R in N.Routes:
+            print(f"    {R}")
+
+    def _CmdPing(self, Args):
+        if len(Args) < 2:
+            print("  usage: ping <node> <dst_ip> [seq] [ttl]")
+            return
+        NodeName, DstIp = Args[0], Args[1]
+        Seq = int(Args[2]) if len(Args) > 2 else 1
+        TTL = int(Args[3]) if len(Args) > 3 else 64
+        if not IP.IsValid(DstIp):
+            print(f"  invalid IP: {DstIp!r}")
+            return
+        N = self._Internet.FindNode(NodeName)
+        if not N.Interfaces:
+            print(f"  {NodeName} has no interfaces")
+            return
+        Iface = N.Interfaces[0]
+        if not isinstance(Iface, EthernetIPInterface):
+            print(f"  {Iface.Name} is not an EthernetIPInterface (try plain `ip`)")
+            return
+        Echo = EchoRequest(Src=Iface.Ip, Dst=DstIp, SeqNumber=Seq,
+                           Data=b"ping", TTL=TTL)
+        Iface.SendIpPacket(Echo)
+        print(f"[{self.Name}] -> {NodeName}.ping  Src={Iface.Ip} Dst={DstIp} seq={Seq} TTL={TTL}")
+
+    def _CmdArp(self, Args):
+        if not Args:
+            print("  usage: arp <node>")
+            return
+        N = self._Internet.FindNode(Args[0])
+        Lines = []
+        for Iface in N.Interfaces:
+            if isinstance(Iface, EthernetIPInterface):
+                for Ip, Mac in Iface.ArpCache.items():
+                    Lines.append(f"    {Iface.Name:<22} {Ip} -> {Mac}")
+                if Iface.ArpPendingCount:
+                    Lines.append(f"    {Iface.Name:<22} ({Iface.ArpPendingCount} pending)")
+        if not Lines:
+            print(f"  {N.Name} ARP cache is empty (or no EthernetIPInterface)")
+            return
+        print(f"  {N.Name} ARP cache:")
+        for L in Lines:
+            print(L)
+
+    def _CmdUdp(self, Args):
+        if len(Args) < 4:
+            print("  usage: udp <node> <dst_ip> <dst_port> <data> [src_port]")
+            return
+        NodeName, DstIp, DstPortStr, Data = Args[0], Args[1], Args[2], Args[3].encode()
+        SrcPort = int(Args[4]) if len(Args) > 4 else 0
+        try:
+            DstPort = int(DstPortStr)
+        except ValueError:
+            print(f"  invalid port: {DstPortStr!r}")
+            return
+        if not IP.IsValid(DstIp):
+            print(f"  invalid IP: {DstIp!r}")
+            return
+        N = self._Internet.FindNode(NodeName)
+        if not N.Interfaces:
+            print(f"  {NodeName} has no interfaces")
+            return
+        Iface = N.Interfaces[0]
+        if not isinstance(Iface, EthernetIPInterface):
+            print(f"  {Iface.Name} is not an EthernetIPInterface")
+            return
+        Iface.SendUdp(DstIp=DstIp, DstPort=DstPort, Data=Data, SrcPort=SrcPort)
+        print(f"[{self.Name}] -> {NodeName}.SendUdp  "
+              f"{Iface.Ip}:{SrcPort} -> {DstIp}:{DstPort} Data={Data!r}")
+
+    def _CmdNat(self, Args):
+        if not Args:
+            print("  usage: nat <router>")
+            return
+        N = self._Internet.FindNode(Args[0])
+        if not isinstance(N, NatRouter):
+            print(f"  {Args[0]} is not a NatRouter")
+            return
+        Table = N.NatTable
+        if not Table:
+            print(f"  {N.Name} NAT table is empty")
+            return
+        print(f"  {N.Name} NAT table:")
+        for E in Table:
+            print(f"    {E.PrivateIp} <-> {E.PublicIp}   peer={E.DstIp} id={E.Identifier}")
 
     def _CmdDrain(self, Args):
         if not Args:

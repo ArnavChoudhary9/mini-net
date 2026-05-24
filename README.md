@@ -45,6 +45,9 @@ pip install -e .
 python -m network                    # 2 nodes + 1 wire
 python -m network ethernet           # 3 hosts + 4-port learning switch
 python -m network lossy              # 2 nodes on a 30% lossy wire
+python -m network routed             # alice -- r1 -- r2 -- r3 -- bob
+python -m network dynamic            # 3 DynamicRouters discover each other
+python -m network campus             # full LAN: switches + NAT edge router
 
 # or run the walkthroughs
 python examples/01_foundation.py     # Packet -> Wire -> Interface -> Node
@@ -52,6 +55,9 @@ python examples/02_controller.py     # programmatic controller
 python examples/03_repl.py           # interactive REPL, scripted setup
 python examples/04_ethernet.py       # MAC, frames, a learning switch
 python examples/05_ethernet_repl.py  # switched LAN, interactive
+python examples/06_routing.py        # multi-hop IP routing + TTL
+python examples/07_campus_lan.py     # ARP + ICMP + NAT + traceroute
+python examples/08_udp.py            # UDP echo server with two clients
 ```
 
 ## What's inside
@@ -67,6 +73,16 @@ python examples/05_ethernet_repl.py  # switched LAN, interactive
 | **MAC + EthernetFrame** | Layer-2 addressing and the frame that travels on the wire        |
 | **EthernetInterface**   | An `Interface` with a MAC address and `SendFrame()` helper       |
 | **Switch**              | A `Node` that learns MACs and forwards frames between ports      |
+| **IP + IPPacket**       | Layer-3 dotted-quad addresses, CIDR subnets, packets with TTL    |
+| **IPInterface**         | An `Interface` with an IP / subnet and `SendIp()` helper         |
+| **Router**              | A `Node` that forwards IP packets by longest-prefix match + TTL  |
+| **ARP**                 | Resolves IP → MAC via broadcast (used by `EthernetIPInterface`)  |
+| **EthernetIPInterface** | Combined MAC + IP interface with an ARP cache + auto-ICMP-reply  |
+| **ICMP**                | Ping (echo), Time Exceeded, Destination Unreachable              |
+| **DynamicRouter**       | Distance-vector routing (RIP-style) — peers exchange routes      |
+| **NatRouter**           | Source-NAT at the edge — many private IPs, one public IP         |
+| **MTU + Fragmentation** | Wires have MTU; routers fragment; hosts reassemble               |
+| **UDP + UdpSocket**     | Datagrams, ports, bind/send/receive, Port Unreachable ICMP       |
 
 ## Learning philosophy
 
@@ -99,7 +115,14 @@ network/                core library
   node.py               Node
   internet.py           Internet (two-phase global tick)
   ethernet.py           MAC, EthernetFrame, EthernetInterface, Switch
-  controller.py         Controller + REPL
+  ip.py                 IP, IPPacket (TTL), IPInterface, Route, Router
+  arp.py                ArpMessage + EthernetIPInterface (MAC+IP+ARP)
+  icmp.py               IcmpMessage, echo / time-exceeded / unreachable
+  udp.py                UdpDatagram + UdpSocket (BindUdp on the interface)
+  routing.py            DynamicRouter — distance-vector convergence
+  nat.py                NatRouter — source NAT at the edge
+  frag.py               MTU, FragmentedIPPacket, Reassembler
+  controller.py         Controller + REPL (ping, arp, routes, nat...)
   log.py                EnableLogging() / DisableLogging()
 examples/
   01_foundation.py      building blocks bottom-up
@@ -107,6 +130,9 @@ examples/
   03_repl.py            interactive console (basic 2-node)
   04_ethernet.py        switched LAN with MAC learning (scripted)
   05_ethernet_repl.py   switched LAN (interactive)
+  06_routing.py         5-node IP chain — multi-hop routing + TTL
+  07_campus_lan.py      ARP + ICMP + NAT + traceroute (the full stack)
+  08_udp.py             UDP datagrams + bound sockets + Port Unreachable
 docs/                   mdbook site
 
 python -m network [topology]    # quick REPL launch (see __main__.py)
